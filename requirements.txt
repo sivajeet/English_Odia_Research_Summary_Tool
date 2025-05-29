@@ -1,0 +1,12 @@
+gradio
+langchain
+langchain_community
+transformers
+sentencepiece
+torch
+ollama  # Only if you use local LLMs via Ollama
+PyPDF2
+requests
+pypdf
+langchain_ollama
+sentence-transformers
