@@ -2,7 +2,7 @@ import gradio as gr
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import SKLearnVectorStore
-from langchain_community.embeddings import HuggingFaceEmbeddings  # UPDATED import!
+from langchain.embeddings import HuggingFaceEmbeddings
 from langchain_ollama import ChatOllama
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -11,10 +11,16 @@ import re
 import requests
 from urllib.parse import quote
 
-from transformers import pipeline
-import re
+# <--- For Odia translation
 
-# Translation pipeline (NLLB-200)
+# Initialize global variables
+retriever = None
+rag_application = None
+document_text = None
+pdf_name = None
+
+from transformers import pipeline
+
 translator = pipeline(
     "translation",
     model="facebook/nllb-200-distilled-600M",
@@ -23,32 +29,16 @@ translator = pipeline(
     max_length=400
 )
 
-def translate_to_odia(text, max_len=400):
-    """
-    Translates English text to Odia using NLLB-200 pipeline.
-    Splits long text into sentences for better quality.
-    """
-    # Split text into sentences by period/question/exclamation
-    # You can adjust this logic for your needs.
-    sentences = re.split(r'(?<=[.?!])\s+', text)
-    translated = []
-    for sent in sentences:
-        sent = sent.strip()
-        if sent:
-            try:
-                # Truncate for NLLB context limit, if needed
-                chunk = sent[:max_len]
-                odia = translator(chunk)[0]['translation_text']
-                translated.append(odia)
-            except Exception as e:
-                translated.append(f"[Trans Error: {str(e)}]")
-    return ' '.join(translated)
+def translate_to_odia(text):
+    try:
+        chunks = [text[i:i+400] for i in range(0, len(text), 400)]
+        translated_chunks = [translator(chunk)[0]['translation_text'] for chunk in chunks]
+        return " ".join(translated_chunks)
+    except Exception as e:
+        return f"❌ Error translating: {str(e)}"
 
-# Initialize global variables
-retriever = None
-rag_application = None
-document_text = None
-pdf_name = None
+
+
 
 # Function to load the PDF and initialize the RAG application
 def load_pdf(file):
@@ -103,26 +93,24 @@ def summarize_paper():
         return "Please upload a PDF first!"
 
     try:
-        prompt = (
-            "Summarize the following research paper with focus on these points below:\n\n"
-            "1. Short overview\n"
-            "2. Methodology used\n"
-            "3. Results\n"
-            "4. Conclusion\n\n"
-            f"Paper Content:\n{document_text[:7000]}"
-        )
+        prompt = f"""
+        Summarize the following research paper with focus on these points below:\n\n
+        1. Short overview\n
+        2. Methodology used\n
+        3. Results\n
+        4. Conclusion\n\n
+        Paper Content:\n
+        {document_text[:7000]}
+        """
 
         llm = ChatOllama(model="llama3", temperature=0)
         response = llm.invoke(prompt)
         summary_english = response.content.strip()
 
-        # Odia translation (sentence-wise)
-        summary_odia = translate_to_odia(summary_english)
-
-        return f"**English Summary:**\n{summary_english}\n\n**Odia Summary (ଓଡ଼ିଆ ସାରାଂଶ):**\n{summary_odia}"
-
+        return f"**English Summary:**\n{summary_english}"
     except Exception as e:
         return f"❌ Error generating summary: {str(e)}"
+
 
 # Function to extract keywords using the LLM
 def extract_keywords():
@@ -132,11 +120,10 @@ def extract_keywords():
         return "Please upload a PDF first!"
 
     try:
-        prompt = (
-            "Extract the 5 most relevant keywords or key phrases from the following research paper content. "
-            "Only provide the keywords separated by commas, without any additional text.\n\n"
-            f"Paper Content:\n{document_text[:5000]}"
-        )
+        prompt = f"""
+        Extract the 5 most relevant keywords or key phrases from the following research paper content. \
+        Only provide the keywords separated by commas, without any additional text.\n\n        Paper Content:\n        {document_text[:5000]}
+        """
 
         llm = ChatOllama(model="llama3", temperature=0)
         response = llm.invoke(prompt)
@@ -216,19 +203,11 @@ class RAGApplication:
         doc_texts = "\n".join([doc.page_content for doc in documents])
         return self.rag_chain.invoke({"question": question, "documents": doc_texts})
 
-# New: Q/A handler with Odia translation!
-def answer_question_in_both_langs(question):
-    if not rag_application:
-        return "Please upload a PDF first!"
-    answer_en = rag_application.run(question)
-    answer_or = translate_to_odia(answer_en)
-    return f"**English:**\n{answer_en}\n\n**Odia (ଓଡ଼ିଆ):**\n{answer_or}"
-
 # Gradio Interface
 with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="lime")) as app:
     gr.Markdown("""
     # 📄 **Research Paper Analysis Tool**
-    Upload a research paper in PDF format and get summaries (now in Odia & English!), citations, keywords, related papers, and answers to your questions in both languages.
+    Upload a research paper in PDF format and get summaries (now in Odia & English!), citations, keywords, related papers, and answers to your questions.
     """)
 
     with gr.Row():
@@ -243,13 +222,20 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="green", secondary_hue="lime")) 
     with gr.Tab("🔍 Ask Questions"):
         question_input = gr.Textbox(label="❓ Ask a Question", placeholder="Type your question here...")
         ask_btn = gr.Button("🔍 Get Answer")
-        answer_output = gr.Textbox(label="Answer", lines=12, max_lines=18, interactive=False)
-        ask_btn.click(answer_question_in_both_langs, inputs=question_input, outputs=answer_output)
+        translate_answer_btn = gr.Button("🌐 Translate Answer to Odia")
+        answer_output = gr.Textbox(label="Answer", lines=30, interactive=False)
+    
+        ask_btn.click(lambda q: rag_application.run(q) if rag_application else "Please upload a PDF first!", 
+                    inputs=question_input, outputs=answer_output)
+        translate_answer_btn.click(translate_to_odia, inputs=answer_output, outputs=answer_output)
 
     with gr.Tab("📝 Summarization"):
         summarize_btn = gr.Button("📝 Summarize Paper")
-        summary_output = gr.Textbox(label="Summary", lines=14, max_lines=22, interactive=False)
+        translate_summary_btn = gr.Button("🌐 Translate Summary to Odia")
+        summary_output = gr.Textbox(label="Summary", lines=30, interactive=False)
+
         summarize_btn.click(summarize_paper, outputs=summary_output, show_progress="full")
+        translate_summary_btn.click(translate_to_odia, inputs=summary_output, outputs=summary_output)
 
     with gr.Tab("🔑 Keywords"):
         keyword_btn = gr.Button("🔑 Extract Keywords")
